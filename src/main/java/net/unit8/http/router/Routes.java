@@ -15,7 +15,7 @@ import java.util.Properties;
  */
 public class Routes {
 	private static volatile List<String> possibleControllers = null;
-	private static RouteSet routeSet = new RouteSet();
+	private static final RouteSet routeSet = new RouteSet();
     private static ControllerDetector controllerDetector;
     static CurrentControllerFinder currentControllerFinder;
 
@@ -34,6 +34,13 @@ public class Routes {
 		return getRouteSet().recognizePath(path, method);
 	}
 
+	/**
+	 * 一致するルートがない場合に例外を投げず null を返す。
+	 */
+	public static Options tryRecognizePath(String path, String method) {
+		return getRouteSet().tryRecognizePath(path, method);
+	}
+
 	public static void load(InputStream stream) {
 		getRouteSet().loadStream(stream);
 	}
@@ -44,19 +51,29 @@ public class Routes {
 		getRouteSet().load();
 	}
 
-	public static synchronized RouteSet getRouteSet() {
+	/**
+	 * routeSet は不変の参照なのでロックは不要。リクエスト処理がここで待たされることはない。
+	 */
+	public static RouteSet getRouteSet() {
 		return routeSet;
 	}
 
-	public static synchronized List<String> possibleControllers() {
-		if (possibleControllers == null) {
-			synchronized(Routes.class) {
-				if (possibleControllers == null) {
-					possibleControllers = controllerDetector.detect();
+	/**
+	 * コントローラ名の検出は初回だけ行う。{@link RouteSet} がルートを読み込む時に呼ばれ、
+	 * リクエストの経路では呼ばれない。
+	 */
+	public static List<String> possibleControllers() {
+		List<String> names = possibleControllers;
+		if (names == null) {
+			synchronized (Routes.class) {
+				names = possibleControllers;
+				if (names == null) {
+					names = controllerDetector.detect();
+					possibleControllers = names;
 				}
 			}
 		}
-		return possibleControllers;
+		return names;
 	}
 
     static {

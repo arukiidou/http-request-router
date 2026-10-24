@@ -13,14 +13,24 @@ public class RouteBuilder {
 	private static final Pattern PTN_PATH            = Pattern.compile("\\A\\*(\\w+)");
 	private static final Pattern PTN_STATIC          = Pattern.compile("\\A\\?(.*?)\\?");
 
-	private List<String> optionalSeparators;
-	private Pattern separatorRegexp;
-	private Pattern nonseparatorRegexp;
+	private static final List<String> OPTIONAL_SEPARATORS = Collections.singletonList("/");
+	private static final Pattern SEPARATOR_REGEXP =
+			Pattern.compile("[" + RegexpUtil.escape(ARStringUtil.join(SEPARATORS)) + "]");
+	private static final Pattern NONSEPARATOR_REGEXP =
+			Pattern.compile("\\A([^" + RegexpUtil.escape(ARStringUtil.join(SEPARATORS))+ "]+)");
+
+	/** :controller に一致させるコントローラ名。null のときは {@link Routes#possibleControllers()} を使う */
+	private final List<String> possibleControllers;
 
 	public RouteBuilder() {
-		optionalSeparators = Collections.singletonList("/");
-		separatorRegexp = Pattern.compile("[" + RegexpUtil.escape(ARStringUtil.join(SEPARATORS)) + "]");
-		nonseparatorRegexp = Pattern.compile("\\A([^" + RegexpUtil.escape(ARStringUtil.join(SEPARATORS))+ "]+)");
+		this(null);
+	}
+
+	/**
+	 * @param possibleControllers 読み込み時に検出済みのコントローラ名。null なら Routes から取得する
+	 */
+	public RouteBuilder(List<String> possibleControllers) {
+		this.possibleControllers = possibleControllers;
 	}
 
 	public List<Segment> segmentsForRoutePath(String path) {
@@ -47,15 +57,17 @@ public class RouteBuilder {
 				key = m.group(2);
 				options.$("wrapParentheses", true);
 			}
-			segment = ARStringUtil.equals(key, "controller") ? new ControllerSegment(key, options) : new DynamicSegment(key, options);
+			segment = ARStringUtil.equals(key, "controller")
+					? new ControllerSegment(key, options, possibleControllers)
+					: new DynamicSegment(key, options);
 		} else if ((m = PTN_PATH.matcher(str)).find()) {
 			segment = new PathSegment(m.group(1), new Options().$("optional", true));
 		} else if ((m = PTN_STATIC.matcher(str)).find()) {
 			segment = new StaticSegment(m.group(1), new Options().$("optional", true));
-		} else if ((m = nonseparatorRegexp.matcher(str)).find()) {
+		} else if ((m = NONSEPARATOR_REGEXP.matcher(str)).find()) {
 			segment = new StaticSegment(m.group(1));
-		} else if ((m = separatorRegexp.matcher(str)).find()) {
-			segment = new DividerSegment(m.group(), new Options().$("optional", optionalSeparators.contains(m.group())));
+		} else if ((m = SEPARATOR_REGEXP.matcher(str)).find()) {
+			segment = new DividerSegment(m.group(), new Options().$("optional", OPTIONAL_SEPARATORS.contains(m.group())));
 		}
 		sb.delete(0, m.end());
 		return segment;

@@ -7,18 +7,27 @@ import java.util.List;
 import java.util.regex.Matcher;
 
 public class ControllerSegment extends DynamicSegment {
+	/** null のときは {@link Routes#possibleControllers()} を使う */
+	private final List<String> possibleControllers;
+
 	public ControllerSegment(String value, Options options) {
+		this(value, options, null);
+	}
+
+	public ControllerSegment(String value, Options options, List<String> possibleControllers) {
 		super(value, options);
+		this.possibleControllers = possibleControllers;
 	}
 
 	public ControllerSegment(String key) {
-		super(key);
+		this(key, new Options(), null);
 	}
 
 	@Override
 	public String regexpChunk() {
 		List<String> possibleNames = new ArrayList<String>();
-		for (String name : Routes.possibleControllers()) {
+		List<String> controllers = possibleControllers != null ? possibleControllers : Routes.possibleControllers();
+		for (String name : controllers) {
 			possibleNames.add(RegexpUtil.escape(name));
 		}
 		return "(?i-:(" + ARStringUtil.join(possibleNames, "|")+ "))";

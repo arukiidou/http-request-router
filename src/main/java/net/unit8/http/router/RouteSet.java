@@ -1,31 +1,30 @@
 package net.unit8.http.router;
 
-import net.unit8.http.router.recognizer.OptimizedRecognizer;
-
 import java.io.File;
 import java.io.InputStream;
 import java.util.*;
 
+/**
+ * ルーティング表を保持する。
+ * <p>
+ * リクエスト処理(認識・URL生成)はロックを取らず、volatile な {@code table} を1回読むだけ。
+ * 設定の読み込みは新しい表を別に組み立ててから参照を差し替えるので、読み込み中も旧い表で処理が続く。
+ * 書き込み系のメソッド(load / loadStream / addRoute / clear)だけが互いに排他される。
+ */
 public class RouteSet {
-	private TreeSet<File> configurationFiles;
-	private List<Route> routes;
-	private RouteBuilder builder = new RouteBuilder();
-	private Recognizer recognizer;
-	private Map<String, Map<String, List<Route>>> routesByController;
+	private final TreeSet<File> configurationFiles = new TreeSet<File>();
+	private volatile RoutingTable table = RoutingTable.EMPTY;
+	/** 直近の読み込み時点のコントローラ名。guarded by this */
+	private List<String> controllers;
 
 	public RouteSet() {
-		routes = new ArrayList<Route>();
-		configurationFiles = new TreeSet<File>();
-		routesByController = new HashMap<String, Map<String,List<Route>>>();
-		recognizer = new OptimizedRecognizer();
 	}
 
-	public void clear() {
-		routes.clear();
-		routesByController.clear();
+	public synchronized void clear() {
+		table = RoutingTable.EMPTY;
 	}
 
-	public void addConfigurationFile(File file) {
+	public synchronized void addConfigurationFile(File file) {
 		configurationFiles.add(file);
 	}
 
@@ -33,90 +32,69 @@ public class RouteSet {
 		return configurationFiles;
 	}
 
-	public void load() {
-		clear();
-		loadRoutes();
-	}
-
-	public void loadStream(InputStream stream) {
-		clear();
-		routes = new RouteLoader(builder).load(stream);
-		recognizer.setRoutes(routes);
-	}
-
-	private void loadRoutes() {
+	public synchronized void load() {
+		RouteBuilder builder = newBuilder();
+		List<Route> routes;
 		if (!configurationFiles.isEmpty()) {
+			routes = Collections.emptyList();
 			for (File config : configurationFiles) {
 				routes = new RouteLoader(builder).load(config);
 			}
 		} else {
-			addRoute(":controller/:action/:id", new Options());
+			routes = new ArrayList<Route>();
+			routes.add(builder.build(":controller/:action/:id", new Options()));
 		}
-		recognizer.setRoutes(routes);
+		table = new RoutingTable(routes);
 	}
 
-	public Route addRoute(String path, Options options) {
-		Route route = builder.build(path, options);
-		routes.add(route);
+	public synchronized void loadStream(InputStream stream) {
+		List<Route> routes = new RouteLoader(newBuilder()).load(stream);
+		table = new RoutingTable(routes);
+	}
+
+	/**
+	 * コントローラ名の検出(時間がかかることがある)は、リクエストの経路ではなくここで行う。
+	 */
+	private RouteBuilder newBuilder() {
+		controllers = Routes.possibleControllers();
+		return new RouteBuilder(controllers);
+	}
+
+	public synchronized Route addRoute(String path, Options options) {
+		Route route = new RouteBuilder(controllers).build(path, options);
+		List<Route> next = new ArrayList<Route>(table.routes());
+		next.add(route);
+		table = new RoutingTable(next);
 		return route;
 	}
 
+	/**
+	 * @throws RoutingException 一致するルートがない場合
+	 */
 	public Options recognizePath(String path, String method) {
-		if (!recognizer.isOptimized()) {
-			recognizer.setRoutes(routes);
+		Options result = table.recognize(path, method);
+		if (result == null) {
+			throw new RoutingException("No route matches " + path);
 		}
-		return recognizer.recognize(path, method);
+		return result;
+	}
+
+	/**
+	 * 一致するルートがない場合に例外を投げず null を返す。
+	 * 「一致なし」を通常の結果として扱いたい呼び出し側向け。
+	 * (測定上、一致しないパスのコストは例外の生成よりも全ルートの走査が支配的で、速度は変わらない)
+	 */
+	public Options tryRecognizePath(String path, String method) {
+		return table.recognize(path, method);
 	}
 
 	public String generate(Options options) {
-		Options merged = new Options(options);
-		String controller = merged.getString("controller");
-		String action     = merged.getString("action");
-		if (ARStringUtil.isEmpty(controller) || ARStringUtil.isEmpty(action)) {
-			throw new RoutingException("Need controller and action!");
-		}
-		List<Route> routes = routesByController(controller, action);
-		for(Route route : routes) {
-			if (!hasAllKey(route, options))
-				continue;
-			String results = route.generate(options, merged);
-			if (!ARStringUtil.isEmpty(results)) {
-				return results;
-			}
-		}
-		throw new RoutingException("No route matches " + options.toString());
-	}
-
-	private boolean hasAllKey(Route route, Options options) {
-		for (String key : route.significantKeys()) {
-			if (!options.containsKey(key))
-				return false;
-		}
-		return true;
-	}
-
-	private List<Route> routesByController(String controller, String action) {
-		Map<String, List<Route>> actionMap = routesByController.get(controller);
-		if (actionMap == null) {
-			actionMap = new HashMap<String, List<Route>>();
-			routesByController.put(controller, actionMap);
-		}
-		List<Route> routesByAction = actionMap.get(action);
-		if (routesByAction == null) {
-			routesByAction = new ArrayList<Route>();
-			for (Route route : routes) {
-				if (route.matchesControllerAndAction(controller, action)) {
-					routesByAction.add(route);
-				}
-			}
-			actionMap.put(action, routesByAction);
-		}
-		return routesByAction;
+		return table.generate(options);
 	}
 
 	public String toString() {
 		StringBuilder out = new StringBuilder(1024);
-		for (Route route : routes) {
+		for (Route route : table.routes()) {
 			out.append(route.toString());
 		}
 		return out.toString();
